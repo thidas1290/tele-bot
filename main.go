@@ -8,8 +8,6 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/gotd/td/tg"
-
 	"tele-bot/config"
 	"tele-bot/server"
 	"tele-bot/storage"
@@ -42,6 +40,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to create Telegram client: %v", err)
 	}
+	defer client.Close() // Clean up connection pool on exit
 	log.Println("✅ Client and dispatcher created")
 
 	// Set up context with cancellation
@@ -53,14 +52,12 @@ func main() {
 
 	// Run Telegram client
 	go func() {
-		err := client.Run(ctx, cfg.BotToken, func(api *tg.Client) error {
+		err := client.Run(ctx, cfg.BotToken, func(api *telegram.Client) error {
 			log.Println("Telegram client connected")
 
-			// Create downloader
-			downloader := telegram.NewDownloader(api)
-
-			// Create HTTP server
-			httpServer := server.New(store, downloader, cfg.BaseURL)
+			// Create HTTP server with pooled API for parallel downloads
+			httpServer := server.New(store, api.PooledAPI(), cfg.BaseURL)
+			log.Println("📥 Server using connection pool for parallel requests")
 
 			// Start HTTP server in a goroutine
 			go func() {
@@ -72,8 +69,8 @@ func main() {
 			log.Printf("HTTP server listening on port %d", cfg.HTTPPort)
 			log.Printf("Download links will be: %s/download/{id}", cfg.BaseURL)
 
-			// Create message handler
-			handler := telegram.NewHandler(api, store, cfg.BaseURL)
+			// Create message handler with standard API (single connection is fine for messaging)
+			handler := telegram.NewHandler(api.API(), store, cfg.BaseURL)
 
 			// Register handlers with the dispatcher (the client is already listening!)
 			if err := handler.Register(ctx, dispatcher); err != nil {

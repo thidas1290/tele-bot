@@ -2,9 +2,12 @@ package server
 
 import (
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"strings"
+
+	"github.com/gotd/td/tg"
 
 	"tele-bot/storage"
 	"tele-bot/telegram"
@@ -12,17 +15,17 @@ import (
 
 // Server handles HTTP requests for file downloads
 type Server struct {
-	storage    *storage.Storage
-	downloader *telegram.Downloader
-	baseURL    string
+	storage *storage.Storage
+	api     *tg.Client // Pooled API for downloads
+	baseURL string
 }
 
 // New creates a new HTTP server
-func New(storage *storage.Storage, downloader *telegram.Downloader, baseURL string) *Server {
+func New(storage *storage.Storage, api *tg.Client, baseURL string) *Server {
 	return &Server{
-		storage:    storage,
-		downloader: downloader,
-		baseURL:    baseURL,
+		storage: storage,
+		api:     api,
+		baseURL: baseURL,
 	}
 }
 
@@ -95,13 +98,26 @@ func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}
 
-	// Stream file from Telegram
-	// Use request context to handle cancellation (client disconnect)
+	// Stream file from Telegram using TelegramReader
 	ctx := r.Context()
-	log.Printf("httpRange.start %d httpRange.end %d httpRange.length %d", httpRange.Start, httpRange.End, httpRange.Length)
-	err = s.downloader.DownloadFile(ctx, meta.FileID, meta.AccessHash, meta.FileReference, httpRange.Start, httpRange.Length, w)
+	log.Printf("📥 Download request: start=%d, end=%d, length=%d", httpRange.Start, httpRange.End, httpRange.Length)
+
+	// Create a TelegramReader for the requested byte range
+	reader := telegram.NewTelegramReader(
+		ctx,
+		s.api,
+		meta.FileID,
+		meta.AccessHash,
+		meta.FileReference,
+		httpRange.Start,
+		httpRange.End,
+	)
+	defer reader.Close()
+
+	// Stream to HTTP response
+	_, err = io.Copy(w, reader)
 	if err != nil {
-		log.Printf("Error downloading file: %v", err)
+		log.Printf("Error streaming file: %v", err)
 		// Can't send error response as headers already sent
 		return
 	}
